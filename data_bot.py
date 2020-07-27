@@ -20,6 +20,11 @@ class ImputerStrategy(Enum):
     CLASSIFICATION_MODEL = 'clasification_model'
 
 
+def impute_default_value(value):
+    if value is np.nan:
+        return 0.0
+    return value
+
 class DataBot:
     numeric_types: List[str] = ['int64', 'float64', 'datetime64']
     string_types: List[str] = ['object', 'category']
@@ -48,9 +53,9 @@ class DataBot:
             self.features = dataset
 
     # Lambda for a series object that fill nulls with the mean.
-    fill_mean = None
+    fill_mean = lambda x: x.fillna(x.mean())
     # Lambda for a series object that fill nulls with the mode.
-    fill_mode = None
+    fill_mode = lambda x: x.fillna(x.mode().iloc[0])
 
     def scale_range(self, x):
         return (x - x.min(axis=0)) / (x.max(axis=0) - x.min(axis=0))
@@ -64,6 +69,9 @@ class DataBot:
     }
 
     def impute(self, columns, impute_strategy):
+        self.features[columns] = self.features[columns].apply(self.impute_strategies[impute_strategy])
+
+
         """Impute selected columns (pd.Series) from self.features with the given strategy.
 
         Parameters
@@ -74,6 +82,7 @@ class DataBot:
         pass
 
     def one_hot_encode(self, col_name, categorical_values):
+        self.features = pd.get_dummies(self.features, columns=[col_name])
         """ Apply one hot encoding to the given column.
 
         :param col_name: Name of the column to one hot encode.
@@ -86,47 +95,73 @@ class DataBot:
         """Apply self.scale_range and self.scale_log to the given columns
         :param columns: list of columns names to normalize
         """
-        self.features[columns] = None
-        self.features[columns] = None
+        self.features[columns] = self.features[columns].apply(self.scale_range)
+        self.features[columns] = self.features[columns].apply(self.scale_log)
 
     def remove_null_columns(self):
         """Remove columns with a percentage of null values greater than the given threshold (self.null_threshold).
         
         """
+        null_columns = self.dataset.isnull().mean()
+        list_column_names = list(self.dataset.columns.values)
+        for item in list_column_names:
+            if null_columns[item] > self.null_threshold:
+                self.dataset.drop(item, axis=1, inplace=True)
+                self.datasetAttributes.parameters['removed_columns'].append(item)
         pass
 
     def remove_high_cardinality_columns(self):
         """Remove columns with a cardinality percentage greater than the given threshold (self.cardinal_threshold).
 
         """
+        list_column_names = list(self.dataset.columns.values)
+        for item in list_column_names:
+            uniqueValues = self.dataset[item].unique()
+            totalValue = self.dataset[item].count()
+            cardinality = len(uniqueValues) / totalValue
+            if cardinality > self.cardinal_threshold:
+                self.dataset.drop(item, axis=1, inplace=True)
+                self.datasetAttributes.parameters['removed_columns'].append(item)
         pass
 
     def pre_process(self):
         """Preprocess dataset features before being send to ML algorithm for training.
         """
+
+
         # Implement this method with the given indications in the given order
 
         # Remove columns with null values above the threshold
+        self.remove_null_columns()
+
 
         # Remove columns with cardinality above the threshold
+        self.remove_high_cardinality_columns()
+
+
 
         # Create a python list with the names of columns with numeric values.
         # Numeric columns have one of the types stored in the list self.numeric_types
-        self.numeric_columns = None
+
+        self.numeric_columns = self.features.select_dtypes(include=self.numeric_types).columns.tolist()
 
         # Create a python list with the names of columns with string values.
         # Categorical columns have one of the types stored in the list self.string_types
-        self.categorical_columns = None
+        self.categorical_columns = self.features.select_dtypes(include=self.string_types).columns.tolist()
 
         # Create a python list with the names of numeric columns with at least one null value.
-        numeric_nulls = None
+
+        numeric_nulls = self.features[self.numeric_columns].isna().any().index.tolist()
+
 
         # Create a python list with the names of categorical columns with at least one null value.
-        categorical_nulls = None
+        categorical_nulls = self.features[self.categorical_columns].isna().any().index.tolist()
 
         # Impute numerical columns with at least one null value.
+        self.impute(numeric_nulls, ImputerStrategy.MEAN)
 
         # Impute categorical columns with at least one null value.
+        self.impute(categorical_nulls, ImputerStrategy.MODE)
 
         # These two lines gather information from the dataset for further use.
         self.datasetAttributes.set_column_values(self.categorical_columns, self.features)
@@ -134,7 +169,12 @@ class DataBot:
 
         # Apply one hot encoding to all categorical columns.
 
+        for item in self.categorical_columns:
+            self.one_hot_encode(item, self.features[item].nunique())
+
         # Normalize all numeric columns
+
+        self.normalize(self.numeric_columns)
 
         # This line store relevant information from the processed dataset for further use.
         self.datasetAttributes.save()
@@ -165,3 +205,5 @@ class DataBot:
         self.dataset = self.features
         self.dataset[self.target_name] = self.target
         return self.dataset
+
+
